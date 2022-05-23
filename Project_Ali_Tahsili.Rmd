@@ -1,0 +1,1382 @@
+---
+title: 'Final Project - AMOD 5250H'
+author: "Ali Tahsili"
+output:
+  html_document:
+    toc: yes
+    toc_depth: '5'
+    df_print: paged
+    code_folding: show
+  html_notebook:
+    toc: yes
+    toc_depth: 5
+    theme: paper
+    highlight: tango
+    self_contained: yes
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+#Package management (you don't need to do anything with this, it just makes sure you have all the #packages you need for this assignment):
+
+# check if pacman is install, if not, install it from cran and load
+
+if (!require("pacman")) {
+      install.packages("pacman", dependencies=TRUE, repos='http://cran.rstudio.com/')
+      library(pacman)
+}
+
+# packages used in this report:
+pacman::p_load("tidyverse",
+               "data.table",
+               "usmap",
+               "Hmisc",
+               "cluster",
+               "dendextend",
+               "weights",
+               "caret",
+               "formattable",
+               "nnet",
+               "knitr",
+               "GGally",
+               "corrplot",
+               "stringr", 
+               "rstatix", 
+               "tidytext",
+               "textdata",
+               "wordcloud",
+               "reshape2",
+               "igraph",
+               "glue")
+```
+
+```{css, echo=FALSE}
+.ans {
+   background-color:rgb(248,248,248); 
+  padding: 1em; 
+  border: .1em solid #CCC;
+  border-radius:.2em;
+  color:purple;
+  margin: 1em 0;
+}
+```
+
+
+
+
+```{r, eval=FALSE}
+## data gathering
+PartA <- fread("psam_pusa.csv")
+Data1 <- PartA %>% 
+  filter(CIT %in% c(4,5), AGEP >= 20, AGEP < 70) %>% 
+  select(PWGTP, POBP, WAOB, SEX, AGEP, ST, MAR, SCHL, FOD1P, FOD2P, INDP, 
+         WKHP, PINCP, ADJINC, POVPIP, YOEP, HICOV, PRIVCOV, PUBCOV)
+rm(PartA)
+
+PartB <- fread(file = "psam_pusb.csv")
+Data2 <- PartB %>% 
+  filter(CIT %in% c(4,5), AGEP >= 20, AGEP < 70) %>% 
+  select(PWGTP, POBP, WAOB, SEX, AGEP, ST, MAR, SCHL, FOD1P, FOD2P, INDP, 
+         WKHP, PINCP, ADJINC, POVPIP, YOEP, HICOV, PRIVCOV, PUBCOV)
+rm(PartB)
+
+PartC <- fread(file = "psam_pusc.csv")
+Data3 <- PartC %>% 
+  filter(CIT %in% c(4,5), AGEP >= 20, AGEP < 70) %>% 
+  select(PWGTP, POBP, WAOB, SEX, AGEP, ST, MAR, SCHL, FOD1P, FOD2P, INDP, 
+         WKHP, PINCP, ADJINC, POVPIP, YOEP, HICOV, PRIVCOV, PUBCOV)
+rm(PartC)
+
+PartD <- fread(file = "psam_pusd.csv")
+Data4 <- PartD %>% 
+  filter(CIT %in% c(4,5), AGEP >= 20, AGEP < 70) %>% 
+  select(PWGTP, POBP, WAOB, SEX, AGEP, ST, MAR, SCHL, FOD1P, FOD2P, INDP, 
+         WKHP, PINCP, ADJINC, POVPIP, YOEP, HICOV, PRIVCOV, PUBCOV)
+rm(PartD)
+
+main.data <- bind_rows(Data1, Data2, Data3, Data4)
+rm(Data1,Data2,Data3,Data4)
+
+main.data <- as_tibble(main.data)
+
+```
+
+
+
+
+
+
+```{r, eval=FALSE}
+### Creating 2 datasets from PUMS Dictionary
+
+pums_dic <- read_csv("CopyOfPUMS_Data_Dictionary_2015-2019.csv")
+
+POBP <- pums_dic %>% 
+  filter(PUMS_Variable_Name == "POBP") %>% 
+  select(POB = Starting_Legal_Value, Description) %>% 
+  slice(-1)
+
+ST <- pums_dic %>% 
+  filter(PUMS_Variable_Name == "ST") %>% 
+  select(ST = Starting_Legal_Value, Description) %>% 
+  slice(2:52) %>% 
+  separate(Description, into = c("state_name", "state_abb"), sep = "/")
+
+```
+
+```{r, eval=FALSE}
+## factorizing the variables properly
+colnames(main.data) <- c("weight", "birth_place", "birth_continent", "gender", 
+                         "age", "resident_state", "marital_status", 
+                         "educational_attainment", "first_degree", "second_degree",  
+                         "industry", "worked_per_week", "total_income", 
+                         "adjust_factor", "Income_to_poverty_ratio", "year_entry", 
+                         "health_insurance", "private_health_insurance_bin",
+                         "public_health_coverage_bin")
+renamed.to <- colnames(main.data)
+
+main.data <- main.data %>% mutate(year = case_when(
+  adjust_factor == 1080470 ~ 2015,
+  adjust_factor == 1073449 ~ 2016,
+  adjust_factor == 1054606 ~ 2017,
+  adjust_factor == 1031452 ~ 2018,
+  TRUE ~ 2019
+)) %>% 
+  select(year, everything()) %>% 
+  mutate(adj_income = round(total_income*(adjust_factor/1000000))) %>% 
+  select(year:worked_per_week, adj_income, Income_to_poverty_ratio:public_health_coverage_bin, -adjust_factor, -total_income)
+
+
+# Place of birth
+POB_adj<- POBP %>% 
+  filter( POB %in% unique(main.data$birth_place))
+main.data$birth_place <- factor(main.data$birth_place, labels = POB_adj$Description)
+
+# World area place of birth
+main.data$birth_continent <- factor(main.data$birth_continent , labels = c("PR and US Island Areas","Latin America", "Asia", "Europe", "Africa", "Northern America", "Oceania and at Sea"))
+
+main.data <- main.data %>% mutate(birth_continent = fct_recode(birth_continent,
+    "North America"    = "PR and US Island Areas",
+    "South America"      = "Latin America",
+    "North America" = "Northern America",
+    "Oceania and at Sea" = "Oceania and at Sea"
+  ))
+
+# Gender
+main.data$gender <- factor(main.data$gender , labels = c("Male","Female"))
+
+# State
+main.data$resident_state <- factor(main.data$resident_state,labels = ST$state_abb)
+
+# Marital status 
+main.data$marital_status <- factor(main.data$marital_status , labels = c("Married","Widowed", "Divorced", "Separated", "Never married or under 15 years old"))
+
+# Educational attainment
+main.data$educational_attainment <- factor(main.data$educational_attainment)
+
+main.data <- main.data %>%
+  mutate(educational_attainment = fct_collapse(educational_attainment,
+    "No diploma" = as.character(rep(01:15)),
+    "Diploma with no degree" = as.character(rep(16:19)),
+    "Associate's degree" = as.character(20),
+    "Beyond an Associate's degree" = as.character(rep(21:24))
+    ))
+
+# First degree
+main.data$first_degree <- as.factor(main.data$first_degree)
+
+main.data <- main.data %>%
+  mutate(first_degree = fct_collapse(first_degree,
+    `Computers, Mathematics and Statistics` = as.character(c(rep(2001:2107),rep(3700:3702),4005)),
+    `Biological Agricultural Environmental Sciences` = as.character(c(rep(1100:1303),rep(3600:3699))),
+    `Physical and Related Sciences` = as.character(rep(5000:5009)),
+    Psychology = as.character(rep(5200:5299)),
+    `Social Sciences` = as.character(c(2901,5301,rep(5500:5599))),
+    Engineering = as.character(rep(2400:2502)),
+    `Multidisciplinary Studies` = as.character(c(rep(4000:4002),4006,4007,5098)),
+    `Science and Engineering Related` = as.character(c(rep(2503:2599),5701,rep(6100:6199))),
+    Business = as.character(c(rep(6200:6206),rep(6209:6299))),
+    Finance = as.character(6207),
+    Education = as.character(rep(2300:2399)),
+    `Literature and Languages` = as.character(c(rep(2601:2603),3301,3302)),
+    `Liberal Arts and History` = as.character(c(rep(3401:3501),4801,4901,6402,6403)),
+    `Visual and Performing Arts` = as.character(c(1401,1501,rep(6000:6099),6002)),
+    Communications = as.character(rep(1901:1904)),
+    Other = as.character(c(2201,3201,3202,3801,4101,5102,rep(5401:5404),5601,5901))))
+
+### Replace NA value in first_degree and replace it with educational_attainment
+main.data <- main.data %>% 
+    mutate(first_degree = coalesce(first_degree, educational_attainment)) %>% 
+  select(-educational_attainment) %>% 
+  rename(education = first_degree)
+
+# Second degree
+main.data$second_degree <- as.factor(main.data$second_degree)
+
+main.data <- main.data %>%
+  mutate(second_degree = fct_collapse(second_degree,
+    `Computers, Mathematics and Statistics` = as.character(c(rep(2001:2107),rep(3700:3702),4005)),
+    `Biological Agricultural Environmental Sciences` = as.character(c(rep(1100:1303),rep(3600:3699))),
+    `Physical and Related Sciences` = as.character(rep(5000:5009)),
+    Psychology = as.character(rep(5200:5299)),
+    `Social Sciences` = as.character(c(2901,5301,rep(5500:5599))),
+    Engineering = as.character(rep(2400:2502)),
+    `Multidisciplinary Studies` = as.character(c(rep(4000:4002),4006,4007,5098)),
+    `Science and Engineering Related` = as.character(c(rep(2503:2599),5701,rep(6100:6199))),
+    Business = as.character(c(rep(6200:6206),rep(6209:6299))),
+    Finance = as.character(6207),
+    Education = as.character(rep(2300:2399)),
+    `Literature and Languages` = as.character(c(rep(2601:2603),3301,3302)),
+    `Liberal Arts and History` = as.character(c(rep(3401:3501),4801,4901,6402,6403)),
+    `Visual and Performing Arts` = as.character(c(1401,1501,rep(6000:6099),6002)),
+    Communications = as.character(rep(1901:1904)),
+    Other = as.character(c(2201,3201,3202,3801,4101,5102,rep(5401:5404),5601,5901))))
+
+# Industry
+main.data$industry <- as.factor(main.data$industry)
+
+main.data <- main.data %>%
+  mutate(industry = fct_collapse(industry,
+    "Agriculture, Forestry, Fishing, and Hunting" = as.character(rep(0170:0290)),
+    "Mining, Quarrying, and Oil and Gas Extraction" = as.character(rep(0370:0490)),
+    Utilities = as.character(rep(0570:0690)),
+    Construction = as.character(0770),
+    Manufacturing = as.character(rep(1070:3990)),
+    "Wholesale Trade"= as.character(rep(4070:4590)),
+    "Retail Trade" = as.character(rep(4670:5790)),
+    "Transportation and Warehousing" = as.character(rep(6070:6390)),
+    "Information" = as.character(rep(6470:6780)),
+    "Finance and Insurance" = as.character(rep(6870:6992)),
+    "Real Estate and Rental and Leasing" = as.character(rep(7071:7190)),
+    "Professional, Scientific, and Technical Services" = as.character(rep(7270:7490)),
+    "Management of companies and enterprises" = as.character(7570),
+    "Administrative and support and waste management services" = as.character(rep(7580:7790)),
+    "Educational Services" = as.character(rep(7860:7890)),
+    "Health Care and Social Assistance" = as.character(rep(7970:8470)),
+    "Arts, Entertainment, and Recreation" = as.character(rep(8561:8590)),
+    "Accommodation and Food Services" = as.character(rep(8660:8690)),
+    "Other Services, Except Public Administration" = as.character(rep(8770:9290)),
+    "Public Administration" = as.character(rep(9370:9590)),
+    "Military" = as.character(rep(9670:9870)),
+    "Unemployed in 5 years" = as.character(9920)
+    ))
+
+# Health insurance coverage?
+main.data$health_insurance <- factor(main.data$health_insurance, labels = c("Yes","No"))
+
+# Private health insurance coverage?
+main.data$private_health_insurance_bin <- factor(main.data$private_health_insurance_bin, labels = c("Yes","No"))
+
+# Public health coverage?
+main.data$public_health_coverage_bin <- factor(main.data$public_health_coverage_bin, labels = c("Yes","No"))
+
+# Convert Health insurance to three values
+main.data <- main.data %>% 
+  mutate(health_insurance = case_when(
+    public_health_coverage_bin == "Yes" ~ "Public",
+    private_health_insurance_bin == "Yes" ~ "Private",
+    TRUE ~ "No Insurance"
+)) %>% select(-private_health_insurance_bin, -public_health_coverage_bin)
+
+main.data$health_insurance <- as.factor(main.data$health_insurance)
+
+save(main.data ,file = "tidy.data.RData")
+```
+
+# Data summary:
+```{r}
+# Load the data
+load("tidy.data.RData")
+```
+
+<div>
+The data I am working on is from the 2019 American Community Survey (ACS) 5-year Public Use Microdata Samples (PUMS), a sample of the actual responses collected by the American Community Survey between 2015-2019 split into the population and household characteristics. I have selected population data, and each record represents a population sample. This data contains a weighting value to account for the fact that individuals are not sampled with equal probability (people who have a greater chance of being sampled have a lower weight to reflect this). These are essentially a frequency count for each row. 
+
+I filter out US-born people and the individuals whose parents are American. In other words, I narrowed down the data to the people who were born outside the United States with non-US parents. Moreover, I filtered my data to people between 20 and 70 years old, not including 70. There were about 200 variables in the original dataset. I picked 19 variables at first.
+
+These variables are: 
+</div>
+
+```{r}
+original.column.name <- c("PWGTP", "POBP", "WAOB", "SEX", "AGEP", "ST", "MAR", "SCHL", 
+               "FOD1P", "FOD2P", "INDP", "WKHP", "PINCP", "ADJINC", "POVPIP", 
+               "YOEP", "HICOV", "PRIVCOV", "PUBCOV")
+
+renamed.to <- c("weight", "birth_place", "birth_continent", "gender", 
+                         "age", "resident_state", "marital_status", 
+                         "educational_attainment", "first_degree", "second_degree",  
+                         "industry", "worked_per_week", "total_income", 
+                         "adjust_factor", "Income_to_poverty_ratio", "year_entry", 
+                         "health_insurance", "private_health_insurance_bin",
+                         "public_health_coverage_bin")
+kable(data.frame(original.column.name, renamed.to))
+
+```
+
+
+<div>
+It is worth mentioning that only three variables under for report are top-coded, `age`, `total_income` and `income to poverty ratio`. The top code threshold of variable age is below 91, which is not important since I filtered my data to the age below 70. Only in analyzing the `total_income` variable the result might be affected. The top-coded threshold for this variable is $4,209,995. The top coded for `income to poverty ratio` is 0.501.
+
+I searched through the variable values in the “2015-2019 ACS PUMS Data Dictionary” file to see how I could pre-process my variables in the best way possible. First, mutated a new column named “year” based on ` adjust_factor `. Then I changed `total_income` to the `adj_income` variable by adjusting for inflation for each year. Some variables needed more time and effort to allocate them proper factor label. For instance, I labelled `educational_attainment` to four factors. ACS classified the field of degree into 15 categories. I was curious about the field of Finance as well. So, I divided all fields into 16 fields. Then, I combined the `educational_attainment` with the `first_degree` column to `education` column.
+The `industry` column has more than 200 values. Based on the “2017-industry-code-list-with-crosswalk” on https://www.census.gov,  I recoded them to 22 levels. 
+Health Insurance had three separate columns. I combined all of them into one column and allocated three values “private”, “public” and “no insurance”. I changed the type of all other variables to factor and saved the file to “tidy.data.RData”. Here is the summary of data after pre-processing.
+</div>
+
+
+```{r}
+# Numerical data
+kable(summary(main.data[,c(1,2,6,12,13,14,15)]), caption = "Numerical data")
+# Categorical data
+kable(summary(main.data[,c(3,4,5,7,8,9,10,11,16)]), caption = "Categorical data")
+```
+
+
+<div>
+
+This summary has some interesting findings. `worked_per_week` variable has the same value for median and 3rd quarter. I will explore this variable in the next section.
+Mexico has the most population of Immigrants following by India and China. I will also elaborate on the distribution of birthplace across the States. About `r sum(is.na(main.data$second_degree))` missing values for `second degree` showed at least `r nrow(main.data) - sum(is.na(main.data$second_degree))` observations have a second degree or beyond. At last, `r nrow(subset(main.data, main.data$health_insurance == "Private"))` observations have private insurance followed by `r nrow(subset(main.data, main.data$health_insurance == "Public"))` public insurance observations.
+</div>
+
+```{r}
+main.data %>%
+  filter(!is.na(industry), 
+         !industry == "Unemployed in 5 years", 
+         adj_income < 500000) %>% 
+  ggplot() +
+  aes(adj_income) +
+  geom_density() + 
+  scale_y_continuous(name="Frequency", labels = scales::percent) +
+  scale_x_continuous(name="Adjusted income", labels = scales::comma)
+
+```
+
+<div>
+This diagram is a right-skewed distribution of adjusted income less than $500,000 working in the industry. Most immigrants have a salary of fewer than 100,000 dollars.
+</div>
+
+```{r}
+miu <- main.data %>% 
+  filter(!is.na(worked_per_week)) %>% 
+  summarise(Avg.hour.worked = wtd.mean(worked_per_week, weights = weight, normwt = F))
+
+# number of people with 40 hour work time
+
+work.fourty <- main.data %>% 
+    group_by(worked_per_week) %>% 
+    summarise(count = sum(weight)) %>% 
+  filter(worked_per_week == 40) %>% 
+  ungroup() %>% 
+  select(count) %>% 
+  as.numeric()
+```
+
+<div>
+worked_per_week should follow a Poisson distribution. I applied the weight of each observation to get an accurate result. The weighted mean is `r round(as.numeric(miu), 2)`, indicating that many people have a typical 40-hour work time. The following distribution shows `r format(work.fourty, scientific = NA)` people worked exactly 40 hours per week. 
+</div>
+
+
+```{r}
+main.data %>% 
+  group_by(worked_per_week) %>% 
+  summarise(count = sum(weight)) %>% 
+  ggplot() +
+  aes (worked_per_week, count) +
+  geom_histogram(stat = "identity") +
+  xlab("Hour worked per week")
+  
+
+
+```
+
+
+
+
+
+<div>
+It is exciting to extract some information about the immigrant's demographics. How were the immigrants distributed from 2015 to 2019 across the US? What countries have the most population for each state?
+</div>
+
+```{r}
+
+max_migrate <- main.data %>% 
+  group_by(resident_state) %>% 
+  summarise(population = sum(weight)) 
+
+library(usmap)
+# Non-US-born population by state
+max_migrate$fips <- statepop$fips
+max_migrate$abbr <- statepop$abbr
+
+plot_usmap(data = max_migrate, values = "population", alpha = .9, labels = T) + 
+  scale_fill_continuous(low = "white", 
+                        high = "blue", 
+                        name = "Non-US-born population", 
+                        label = scales::comma) + 
+  labs(title = "Non-US-born population by state") +
+  theme(legend.position = "right")
+```
+<div>
+The above US map showed which states are the most populated immigrants. I applied a population logarithm to see which state had the lowest non-US-born people. The below map shows these states’ populations more precisely. The `r as.character(as_vector((max_migrate %>% slice(which.max(population)))[1]))` has the most population among all states, with `r format(as.numeric(as_vector((max_migrate %>% slice(which.max(population)))[2])), scientific = NA)` immigrants.
+</div>
+
+
+```{r}
+# Log population of non-US-born by state
+max_migrate_log <- max_migrate %>% 
+  mutate(log_pop = log(population))
+
+plot_usmap(data = max_migrate_log, values = "log_pop", alpha = .9, labels = T) + 
+  scale_fill_continuous(low = "white", 
+                        high = "blue", 
+                        name = "Non-US-born log population", 
+                        label = scales::comma) + 
+  labs(title = "Non-US-born log population by state") +
+  theme(legend.position = "right")
+```
+
+
+
+```{r}
+# What non-US country has the most population for each state?
+max_pop <- main.data %>% 
+  group_by(resident_state, birth_place) %>% 
+  summarise(population = sum(weight)) %>% 
+  ungroup(birth_place) %>% 
+  slice(which.max(population))
+```
+
+<div>
+The below map shows what non-US country has the most population for each state. In `r nrow(max_pop %>% filter(birth_place == "Mexico"))` states, people born in Mexico have the most population.
+</div>
+
+```{r}
+max_pop$fips <- statepop$fips
+max_pop$abbr <- statepop$abbr
+
+plot_usmap(data = max_pop, values = "birth_place", alpha = .7, labels = T) + 
+  scale_fill_discrete(name = "Country")  +
+  labs(title = "What non-US country has the most population for each state?") +
+  theme(legend.position = "right")
+
+```
+
+```{r}
+main.data %>% 
+  select(weight, year_entry) %>% 
+  group_by(year_entry) %>% 
+  summarise(Population = sum(weight)) %>% 
+  ggplot() +
+  aes(year_entry, Population) +
+  geom_point() +
+  geom_smooth() +
+  labs(x = "Year of Entry", title = "Number of non-US born people between 1945-2019" )
+```
+
+<div>
+As we can see from the above graph, the number of non_US born people have surged till 2000, and we faced the decrease upon that time.
+</div>
+
+<div>
+The chart below shows the relationship between the average income adjusted for inflation with the continent they were born in. South Africa has the lowest average income, and North America has the most revenue.
+</div>
+
+
+
+
+```{r}
+incom.continent <- main.data %>% 
+  select(weight, birth_continent, adj_income, Income_to_poverty_ratio) %>% 
+  group_by(birth_continent) %>% 
+  summarise(adj_income = wtd.mean(adj_income, weights = weight, normwt = F)) %>% 
+  arrange(desc(adj_income))
+
+incom.continent %>% 
+  ggplot() +
+  aes(fct_reorder(birth_continent, adj_income), adj_income, fill = birth_continent) +
+  geom_bar(stat = "identity") +
+  theme(legend.position = "none") +
+  labs(x = "Birth continent", y = "Income adjusted for inflation")
+```
+
+```{r}
+top.income <- main.data %>% 
+  select(weight, birth_place, adj_income, Income_to_poverty_ratio) %>% 
+  group_by(birth_place) %>% 
+  summarise(adj_income = wtd.mean(adj_income, weights = weight, normwt = F)) %>% 
+              arrange(desc(adj_income)) %>% 
+  head(20) 
+top.income %>%
+  kable(caption = "Top 20 average income generated by non-US born people")
+```
+
+<div>
+Australian people have the most average income, with  `r format(round(top.income$adj_income[1]), scientific = NA)` annually. As seen in the table, British and Scandinavians are high earner in the US.
+</div>
+
+```{r}
+foreign_GDP <- main.data %>% 
+  select(weight, birth_place, adj_income, Income_to_poverty_ratio) %>% 
+  group_by(birth_place) %>% 
+  summarise(adj_income = wtd.mean(adj_income, weights = weight, normwt = F), 
+            population = sum(weight), GDP = adj_income*population/10^(9)) %>% 
+  arrange(desc(GDP)) %>% 
+  head(20)
+kable(foreign_GDP, caption = "Top 20 US GDP generated by non-US born people")
+  
+```
+
+<div>
+By multiplying adjusted income and population for each country, I created a new column, GDP, which stands for Gross Domestic Period. Mexican with `r round(foreign_GDP$GDP[1])` billion dollars contributed the most among all nations for generating US GDP since they have the most population in the US, followed by India and China.
+</div>
+
+```{r}
+asian_GDP <- main.data %>% 
+  filter(birth_continent == "Asia") %>% 
+  select(weight, birth_place, adj_income, Income_to_poverty_ratio) %>% 
+  group_by(birth_place) %>% 
+  summarise(adj_income = wtd.mean(adj_income, weights = weight, normwt = F), 
+            population = sum(weight), GDP =adj_income*population/10^(9)) %>% 
+  arrange(desc(GDP)) %>% 
+  head(20)
+kable(asian_GDP, caption = "Top 20 US GDP generated by Asian born people")
+```
+
+<div>
+The above table is the same data but filtered down to Asia. The share of India for generating GDP with `r round(asian_GDP$GDP[1])` billion dollars in the US is more than twice of the second country, China with `r round(asian_GDP$GDP[2])` billion dollars.
+</div>
+
+```{r}
+poverty.ratio <- main.data %>% 
+  select(weight, birth_place, adj_income, Income_to_poverty_ratio) %>% 
+  group_by(birth_place) %>% 
+  summarise(Income_to_poverty_ratio = wtd.mean(Income_to_poverty_ratio, weights = weight, normwt = F), 
+            population = sum(weight)) %>% 
+  arrange(desc(Income_to_poverty_ratio)) %>% 
+  head(20)
+```
+
+<div>
+The table below shows that the most earner people have the best income to poverty ratio. The United Kingdom is the first country on this list with an income to poverty ratio of `r round(poverty.ratio$Income_to_poverty_ratio[1])`.
+</div>
+
+```{r}
+kable(poverty.ratio, caption = "Top 20 countries in terms of	income to poverty ratio")
+
+```
+
+
+
+```{r}
+health_insurance <- main.data %>% 
+  group_by(health_insurance) %>% 
+  summarise(count = sum(weight))
+```
+
+<div>
+About `r round(health_insurance$count[2]/sum(health_insurance$count)*100)`% of immigrants have private insurance and  `r round(health_insurance$count[3]/sum(health_insurance$count)*100)`% have public insurance, and the rest have no insurance. The below chart shows this distribution in a bar chart diagram.
+</div>
+```{r}
+health_insurance %>% 
+  ggplot() +
+  aes(health_insurance, count, fill = health_insurance) +
+  geom_bar(stat = "identity") +
+  theme(legend.position = "none") +
+  xlab("Health Insurance")
+```
+
+
+# Methodology
+
+<div>
+In this project, I investigated two different studies in my data.
+
+1- I tried regressing adjusted income on immigrants' age and gender.
+
+2- Which type of health insurance, i.e., public, private or without insurance, is suitable for what class of immigrants? 
+
+Each observation had a weight assigned to it. In all my analyses, I consider weight to get an accurate result of my data. I also applied the adjusted factor into the total income variable to reflect the effect of inflation from 2015 to 2019. I included outliers in my analysis to avoid missing any explanation power. Moreover, I removed all the observations with missing values in my research to get a relevant result. I needed to check the correlations between the numeric data for the collinearity issues.
+
+For the first study, I averaged all the income data by age and gender to easily see the data trend. I examined whether, by adding gender, our model would improve in fit or not. Then, I studied the effect of the interaction of age and gender on adjusted income and whether the improvement in model fit is worth the increased complexity of our model. Does adding the interaction term provide additional explanatory power over the simpler model?
+The data has an apparent nonlinearity, so I considered the second-order of age in my model. I compared all my model's AIC to pick the lowest AIC as the best model.
+
+For the second study, I examined how the relationship between health insurance with other variables is in my data. I applied a chi-square test to see any relationship between the health insurance type and the continent where immigrants were born. In addition, I modelled a multiple logistic regression to predict the model with the variables. The first model was complex, and it took so much time to build a model. To simplify my model, I tried to aggregate education and industry variables with many values into an appropriate number of clusters. I implemented k-mean clustering, elbow, and Silhouette analysis to find the best k (number of clusters). Then I generated a multiple logistic regression with the simplified model.
+
+</div>
+
+
+# Findings
+
+## Correlation
+```{r cache = TRUE}
+# Correlation matrix: 
+cor.data <- main.data %>% 
+  select(year, age, worked_per_week, adj_income, 
+         Income_to_poverty_ratio, year_entry)
+cor.mat <- matrix(0,length(cor.data),length(cor.data))
+for (i in 1:length(cor.data)) {
+  for (j in 1:length(cor.data)) {
+    cor.mat[i,j] = wtd.cor(cor.data[,i], cor.data[,j], weight = main.data$weight)[1]
+    
+  }
+}
+
+colnames(cor.mat) <- c("Year", "Age", "Hour worked/week", "Adjusted income", 
+         "Income to poverty ratio", "Year of entry")
+
+rownames(cor.mat) <- c("Year", "Age", "Hour worked/week", "Adjusted income", 
+         "Income to poverty ratio", "Year of entry")
+
+kable(cor.mat)
+```
+
+<div>
+This correlation matrix shows all the correlations between the numerical variables. As seen, the variable "year of the entry" negatively correlates with most of the variables. "income to poverty ratio" and "adjusted income" variables are about `r round(cor.mat["Adjusted income","Income to poverty ratio"]*100)/100` correlated, which is the most highest correlation between all the study variables. In addition, the heat map visualizes the weighted correlation between the selected numerical variables in a more beautiful format.
+</div>
+
+```{r}
+corrplot(cor.mat, method="color")
+
+```
+## Income ~ age, gender
+
+```{r}
+# weighted t-test
+male.income <- main.data %>% 
+  filter(gender == "Male") %>% 
+  select(weight, adj_income)
+
+female.income <- main.data %>% 
+  filter(gender == "Female") %>% 
+  select(weight, adj_income)
+
+t_test_salary <- wtd.t.test(male.income$adj_income, 
+           female.income$adj_income, 
+           male.income$weight, 
+           female.income$weight, 
+           mean1 = FALSE)
+```
+
+<div>
+I examined the weighted t-test to see is there any statistical difference in average salary between men and women. The average men's salary is `r currency(as.numeric(round(t_test_salary$additional[2])), digits = 0)` and `r currency(as.numeric(round(t_test_salary$additional[3])), digits = 0)` women. In immigrant people, we can conclude that men and women have statistically significantly different average wages (t-stats = `r as.numeric(round(t_test_salary$coefficients[3]))`).
+</div>
+
+
+<div>
+To investigate more about the average salary between immigrants, I added age as a new variable to show the income distribution across the age as well as gender.
+</div>
+```{r}
+avg.income.data <- main.data %>% 
+  group_by(age, gender) %>% 
+  summarise("Average income" = wtd.mean(adj_income, 
+                                        weights = weight, 
+                                        normwt = FALSE))
+
+avg.income.data %>% 
+  ggplot() + 
+  aes(age, `Average income`, color = gender) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE)
+```
+<div>
+The above graph shows the scatter plot of immigrants' average salary by age and gender. Salaries rose until the age 45 to 50 and then we see a decline in wage after that age. As seen from the graph, men have on average more salary than women in every age group.
+</div>
+
+
+```{r}
+age.model <- lm(`Average income` ~ age, avg.income.data)
+summary.age <- summary(age.model)
+AIC1 <- AIC(age.model)
+```
+
+<div>
+First, I built a model of income regressed by age. The Adjusted R-squared is `r round(summary.age$adj.r.squared*100,1)/100` which is very low. The AIC is `r round(AIC1)`. I plotted the residual values to see which issues we had in terms of normality, conditional heteroskedasticity and effect of outliers in our study. As seen, the results are not very promising.
+</div>
+```{r}
+par(mfrow=c(2,2))
+plot(age.model)
+
+```
+
+
+
+```{r}
+gender.age.model <- lm(`Average income` ~ gender + age -1, avg.income.data)
+summary.gender <- summary(gender.age.model)
+AIC2 <- AIC(gender.age.model)
+```
+
+
+
+
+```{r}
+compare.gender.added <- anova(age.model, gender.age.model)
+```
+<div>
+I added gender to see if our model would improve in fit or not. I used ANOVA to compare the previous model to this model. This output tells us that the gender variable is statistically significant. In other words, it is unlikely that the improvement in fit when adding the gender variable is simply due to random fluctuations in the data F = `r round(compare.gender.added$F[2],2)`. Also, the AIC for this model was `r round(AIC2)`, which was less than the previous one. At last, I checked the residuals, and as it is seen, only the Normal Q-Q plot has enhanced.
+</div>
+
+```{r}
+par(mfrow=c(2,2))
+plot(gender.age.model)
+```
+
+```{r}
+interact.model <- lm(`Average income` ~ gender * age, avg.income.data)
+summary.interact <- summary(interact.model)
+AIC3 <- AIC(interact.model)
+```
+
+
+
+```{r}
+compare.interaction <- anova(gender.age.model, interact.model)
+p_value_interact <- compare.interaction$`Pr(>F)`[2]
+```
+
+<div>
+Then, I added the effect of the interaction of age and gender on salary and whether the improvement in model fit is worth the increased complexity of our model. ANOVA test tells us that adding interaction effect is statistically significant, F = `r round(compare.interaction$F[2],2)`, p-value = `r format(p_value_interact, digits = 2)`. The AIC for this model was `r round(AIC3)`, slightly less than the previous one. To see if the conditional heteroskedasticity improved, I plotted residuals and it shows no improvement.
+</div>
+```{r}
+par(mfrow=c(2,2))
+plot(interact.model)
+
+```
+
+
+
+```{r}
+
+poly.model <- lm(`Average income` ~  gender * poly(age, 2), avg.income.data)
+
+poly.model.summary <- summary(poly.model)
+AIC4 <- AIC(poly.model)
+```
+
+
+<div>
+The data has an evident nonlinearity, so I examined the second-order polynomial of age with the interaction effect by gender. Here are the coefficients for this model:
+</div>
+
+```{r}
+poly.model.rowname <- c("Intercept", "genderFemale",  "age", "age^2", 
+                        "interact(age,gender)", "interact(age^2,gender)")
+rownames(poly.model.summary$coefficients) <- poly.model.rowname
+kable(poly.model.summary$coefficients, digits = c(2,2,2,2), format = "markdown" )
+```
+
+
+```{r}
+compare.poly <- anova(poly.model, interact.model)
+p_value_poly <- compare.poly$`Pr(>F)`[2]
+```
+
+<div>
+The AIC for this model was `r round(AIC4)`, much less than the previous AIC's. ANOVA test tells us adding `age^2` can statistically change our model , F = `r round(compare.poly$F[2],2)`, p-value = `r format(p_value_poly, digits = 2)`. From the distribution of the residuals, we can see that we have no more conditional heteroskedasticity. In the residual vs leverage plot, only observation No. 99 has a standard residual greater than 3, considered an outlier. In this plot, the dotted red lines are Cook’s distance, and the areas of interest for us are the ones outside the dotted line on the top right corner (and possibly the lower right). The No. 99 observation is close to this dotted red line.
+</div>
+
+```{r}
+par(mfrow=c(2,2))
+plot(poly.model)
+
+```
+
+<div>
+The below graph shows the average immigrants' average salaries by age and gender. Points are the actual averaged income data, and the lines are the polynomial model that I have built. It is fascinating to see this data followed the model very smoothly.
+</div>
+
+```{r}
+new.df <- data.frame(gender = avg.income.data$gender, age = avg.income.data$age)
+new.df$pred.inc <- predict(object = poly.model, newdata = new.df)
+new.df %>% 
+  ggplot() +
+  aes(age, pred.inc, color = gender) + 
+  geom_line() +
+  geom_point(data = avg.income.data, aes(x = age, y = `Average income`, color = gender))
+
+```
+
+
+## Multiple logistic regression
+
+### chi-square test
+```{r}
+library(weights)
+
+healthcare1 <- main.data %>% 
+  select(weight, birth_continent, health_insurance)
+
+chi.health <- wtd.chi.sq(var1 = healthcare1$birth_continent, var2 = healthcare1$health_insurance, weight = healthcare1$weight, mean1=F)
+```
+
+<div>
+I examined the weighted chi-squared test to see any relationship between the type of health insurance and the continent where immigrants were born. The result showed a significant difference between where they were born and health insurance. Chi.sq = `r as.numeric(chi.health[1])` and p-value = `r as.numeric(chi.health[3])`.
+</div>
+
+### Complex model
+```{r}
+# preparing data
+big.model <- main.data %>% 
+  select(weight, birth_continent,  gender, age, education, industry, 
+         worked_per_week, adj_income, health_insurance) 
+```
+
+<div>
+To investigate the relationship between the type of health insurance and other relevant variables in this dataset. I generated a multiple logistic regression model and included `birth_continent`,  `gender`, `age`, `education`, `industry`, `worked_per_week` and `adj_income` to describe the `health_insurance` type. I considered weighted data in my analysis to get an actual result. It is worth mentioning that I did not consider `income_to_poverty_ratio` since it has a positive correlation r = `r round(cor.mat["Adjusted income","Income to poverty ratio"]*100)/100` with `adj_income`, and it might cause collinearity.
+</div>
+
+```{r}
+# summarizing data
+
+kable(summary(big.model), caption = "Logistic regression variables")
+```
+
+#### Dealing with NAs
+```{r}
+# Filtered out missing observations
+big.model <- big.model %>% 
+  filter(!is.na(worked_per_week), !is.na(industry))
+```
+
+<div>
+To get a relevant result, I removed observations with missing values. 
+</div>
+
+#### Train and Test dataset
+
+<div>
+To check the accuracy of my model, I divided the data into train and test datasets with a 70:30 ratio, respectively. The tables below show the proportion of each dataset, indicating that those random samplings have the same proportion for each type of health insurance.
+</div>
+
+
+```{r}
+big.model <- big.model %>% 
+  mutate(id = row_number())
+train1.data <- big.model %>% sample_frac(.70)
+test1.data <-anti_join(big.model, train1.data, by='id')
+
+train <- prop.table(wtd.table(train1.data$health_insurance, weights = train1.data$weight, type = "table"))
+kable(train, col.names = "proportion", caption = "Train dataset proportion", format = "markdown")
+test <- prop.table(wtd.table(test1.data$health_insurance, weights = test1.data$weight, type = "table"))
+kable(test, col.names = "proportion", caption = "Test dataset proportion", format = "markdown")
+
+```
+
+#### Build the complex model
+```{r cache = TRUE}
+time1 <- system.time(multinom.fit1 <- multinom(health_insurance ~ . -id -weight, maxit=500, data = train1.data, weights = weight))
+```
+
+
+
+
+```{r}
+p1.big<-predict(multinom.fit1, type="class", newdata=test1.data)
+eval.big.model<- postResample(test1.data$health_insurance, p1.big)
+```
+
+
+<div>
+`education` and `industry` had `r length(levels(big.model$education))` and `r length(levels(big.model$industry))` values, respectively. R took too much time (t=`r round(as.numeric(time1[1]))`s) to generate the model. `r multinom.fit1$n[1]-1` different variables made the model complex. However, the model accuracy was `r round(as.numeric(eval.big.model[1])*100,2)/100`; the model efficiency was not good enough because it had too many variables and took several minutes to build the model. In addition, the importance of each variable is shown in the table below.
+</div>
+
+
+```{r}
+# The importance of different predictors
+imp.big.model <- varImp(multinom.fit1)
+imp.big.model <- imp.big.model %>% 
+  arrange(desc(Overall))
+kable(imp.big.model, digits = 2)
+```
+
+
+### Clustering education based on salary
+#### Hierarchical clustering
+```{r}
+# Clustering Education
+inc_edu <- main.data %>% 
+  select(education, weight, year, adj_income) %>% 
+  group_by(education, year) %>% 
+  summarise(adj_income = wtd.mean(adj_income, weights = weight, normwt = F)) %>% 
+  spread(key = year, value = adj_income)
+
+kable(inc_edu, digits = 0)
+```
+
+<div>
+In the above table, I weighted average the salaries based on the year and education. Then, I used hierarchical clustering to simplify the model to build a dendrogram of education based on the immigrant's yearly average salaries. I proposed clusters using a height of 40,000.
+</div>
+
+```{r}
+temp <- inc_edu$education
+
+row.names(inc_edu) <- inc_edu$education
+
+
+# Calculate Euclidean distance between the education
+dist_inc_edu <- dist(inc_edu, method = "euclidean")
+
+# Generate an average linkage analysis 
+hc_inc_edu <- hclust(dist_inc_edu, method = "average")
+
+# Create a dendrogram object from the hclust variable
+dend_inc_edu <- as.dendrogram(hc_inc_edu)
+
+# Color branches by cluster formed from the cut at a height of 40000
+dend_colored <- color_branches(dend_inc_edu, h = 40000)
+
+# Plot the colored dendrogram
+plot(dend_colored) 
+title(main = "Education dendrogram",
+      ylab = "Average salary")
+
+
+
+
+```
+
+
+
+#### K-means
+<div>
+To find the best k in the k-means method, I examined two analyses, Elbow analysis and Average Silhouette Widths. K with the highest Average Silhouette Widths should be chosen. From Elbow analysis, the best k is 4, and Average Silhouette Widths suggested the k=5 as the best k. Moreover, hierarchical clustering resulted in 4 clusters. Based on the context of this study, I worked with 4 groups to have a better output.
+</div>
+
+
+
+```{r}
+###### Elbow analysis
+inc_edu_trim <- inc_edu %>% 
+  ungroup(education) %>% 
+  select(-education)
+
+row.names(inc_edu_trim) <- temp
+
+# Use map_dbl to run many models with varying value of k (centers)
+tot_withinss <- map_dbl(1:10,  function(k){
+  model <- kmeans(x = inc_edu_trim, centers = k)
+  model$tot.withinss
+})
+
+# Generate a data frame containing both k and tot_withinss
+elbow_df <- data.frame(
+  k = 1:10,
+  tot_withinss = tot_withinss
+)
+
+# Plot the elbow plot
+ggplot(elbow_df, aes(x = k, y = tot_withinss)) +
+  geom_line() +
+  scale_x_continuous(breaks = 1:10) +
+  labs(title = "Elbow analysis")
+
+```
+
+
+
+
+```{r}
+###### Average Silhouette Widths
+# Use map_dbl to run many models with varying value of k
+sil_width <- map_dbl(2:10,  function(k){
+  model <- pam(inc_edu_trim, k = k)
+  model$silinfo$avg.width
+})
+
+# Generate a data frame containing both k and sil_width
+sil_df <- data.frame(
+  k = 2:10,
+  sil_width = sil_width
+)
+
+# Plot the relationship between k and sil_width
+ggplot(sil_df, aes(x = k, y = sil_width)) +
+  geom_line() +
+  scale_x_continuous(breaks = 2:10) +
+  labs(title = "Average Silhouette Widths")
+
+```
+
+```{r}
+k_means_edu <- data.frame(method = c("Hierarchical clustering",
+                                          "Elbow analysis",
+                                          "Average Silhouette Widths"),
+                               k = c(4,4,5))
+kable(k_means_edu, caption = "Best k?")
+```
+
+
+<div>
+Here are the groups for education based on the average salaries of immigrants between 2015-2019. 
+</div>
+
+```{r}
+
+# Create a cluster assignment vector at h = 40,000
+cut_inc_edu <- cutree(hc_inc_edu, h = 40000)
+
+# Generate the segmented the inc_edu data frame
+clust_inc_edu <- inc_edu %>% 
+  ungroup(education) %>% 
+  mutate(cluster = cut_inc_edu)
+
+# Create a tidy data frame by gathering the year and values into two columns
+gathered_inc_edu <- gather(data = clust_inc_edu, 
+                       key = year, 
+                       value = mean_salary, 
+                       -education, -cluster)
+
+# Name each cluster by descending average salary Batch1 to Batch4
+gathered_inc_edu$cluster <- factor(gathered_inc_edu$cluster, labels = c("Batch1","Batch3","Batch4","Batch2"))
+
+cluster_edu <- gathered_inc_edu %>% 
+  filter(year == 2015) %>% 
+  select(education, cluster) %>% 
+  arrange(cluster)
+
+kable(cluster_edu)
+
+# Plot the relationship between mean_salary and year and color the lines by the assigned cluster
+ggplot(gathered_inc_edu, aes(x = year, y = mean_salary, color = fct_reorder2(cluster, year, mean_salary))) +
+    geom_line(aes(group = education)) +
+  labs(title = "Clustering the education variable", color = "Salary") +
+  ylab("Average Salary") 
+
+```
+
+
+
+### Clustering industry based on salary
+#### Hierarchical clustering
+
+<div>
+I did the exact same steps for the `industry` variable.
+</div>
+
+```{r}
+## Clustering Industry
+inc_ind <- main.data %>% 
+  filter(!is.na(industry), !industry == "Unemployed in 5 years") %>% 
+  select(industry, weight, year, adj_income) %>% 
+  group_by(industry, year) %>% 
+  summarise(adj_income = wtd.mean(adj_income, weights = weight, normwt = F)) %>% 
+  spread(key = year, value = adj_income )
+
+kable(inc_ind, digits = 0)
+```
+
+<div>
+In the above table, I weighted average the salaries based on the year and industry. Then, I used hierarchical clustering to simplify the model to build a dendrogram of industry based on the immigrant's yearly average salaries. I proposed clusters using a height of 40,000.
+</div>
+
+```{r}
+temp <- inc_ind$industry
+
+row.names(inc_ind) <- inc_ind$industry
+
+
+# Calculate Euclidean distance between the occupations
+dist_inc_industry <- dist(inc_ind, method = "euclidean")
+
+# Generate an average linkage analysis 
+hc_inc_industry <- hclust(dist_inc_industry, method = "average")
+
+# Create a dendrogram object from the hclust variable
+dend_inc_industry <- as.dendrogram(hc_inc_industry)
+
+# Color branches by cluster formed from the cut at a height of 40000
+dend_colored <- color_branches(dend_inc_industry, h = 40000)
+
+# Plot the colored dendrogram
+plot(dend_colored)
+title(main = "Industry dendrogram",
+      ylab = "Average salary")
+```
+
+#### K-means
+
+```{r}
+##### Elbow analysis
+inc_ind_trim <- inc_ind %>% 
+  ungroup(industry) %>% 
+  select(-industry)
+
+row.names(inc_ind_trim) <- temp
+
+# Use map_dbl to run many models with varying value of k (centers)
+tot_withinss <- map_dbl(1:10,  function(k){
+  model <- kmeans(x = inc_ind_trim, centers = k)
+  model$tot.withinss
+})
+
+# Generate a data frame containing both k and tot_withinss
+elbow_df <- data.frame(
+  k = 1:10,
+  tot_withinss = tot_withinss
+)
+
+# Plot the elbow plot
+ggplot(elbow_df, aes(x = k, y = tot_withinss)) +
+  geom_line() +
+  scale_x_continuous(breaks = 1:10) +
+  labs(title = "Elbow analysis")
+```
+
+
+
+
+```{r}
+###### Average Silhouette Widths
+# Use map_dbl to run many models with varying value of k
+sil_width <- map_dbl(2:10,  function(k){
+  model <- pam(inc_ind_trim, k = k)
+  model$silinfo$avg.width
+})
+
+# Generate a data frame containing both k and sil_width
+sil_df <- data.frame(
+  k = 2:10,
+  sil_width = sil_width
+)
+
+# Plot the relationship between k and sil_width
+ggplot(sil_df, aes(x = k, y = sil_width)) +
+  geom_line() +
+  scale_x_continuous(breaks = 2:10) +
+  labs(title = "Average Silhouette Widths")
+
+```
+
+```{r}
+k_means_ind <- data.frame(method = c("Hierarchical clustering",
+                                          "Elbow analysis",
+                                          "Average Silhouette Widths"),
+                               k = c(3,3,2))
+kable(k_means_ind, caption = "Best k?")
+```
+<div>
+Based on the context of this study, I worked with 3 groups to have a better output.
+</div>
+
+<div>
+Here are the groups for industry based on the average salaries of immigrants between 2015-2019.
+</div>
+
+```{r}
+
+# Create a cluster assignment vector at h = 40,000
+cut_inc_industry <- cutree(hc_inc_industry, h = 40000)
+
+# Generate the segmented clust_inc_industry data frame
+clust_inc_industry <- inc_ind %>% 
+  ungroup(industry) %>% 
+  mutate(cluster = cut_inc_industry)
+
+# Create a tidy data frame by gathering the year and values into two columns
+gathered_inc_industry <- gather(data = clust_inc_industry, 
+                       key = year, 
+                       value = mean_salary, 
+                       -industry, -cluster)
+
+# Name each cluster by descending average salary Batch1 to Batch3
+gathered_inc_industry$cluster <- factor(gathered_inc_industry$cluster, labels = c("Batch3","Batch1","Batch2"))
+
+cluster_ind <- gathered_inc_industry %>% 
+  filter(year == 2015) %>% 
+  select(industry, cluster) %>% 
+  arrange(cluster)
+
+kable(cluster_ind)
+
+# Plot the relationship between mean_salary and year and color the lines by the assigned cluster
+ggplot(gathered_inc_industry, aes(x = year, y = mean_salary, color = fct_reorder2(cluster, year, mean_salary))) + 
+    geom_line(aes(group = industry)) +
+  labs(title = "Clustering the industry variable", color = "Salary") +
+  ylab("Average Salary") 
+```
+
+### Simple model
+```{r}
+# preparing data
+model.data <- main.data %>% 
+  select(weight, birth_continent,  gender, age, education, industry, 
+         worked_per_week, adj_income, health_insurance) 
+
+```
+
+
+```{r}
+### binding education into 4 clusters
+Batch1_edu <- gathered_inc_edu %>% 
+  filter(cluster == "Batch1", year == 2015) %>% 
+  select(education) %>% 
+  pull()
+
+Batch2_edu <- gathered_inc_edu %>% 
+  filter(cluster == "Batch2", year == 2015) %>% 
+  select(education) %>% 
+  pull()
+
+Batch3_edu <- gathered_inc_edu %>% 
+  filter(cluster == "Batch3", year == 2015) %>% 
+  select(education) %>% 
+  pull()
+
+Batch4_edu <- gathered_inc_edu %>% 
+  filter(cluster == "Batch4", year == 2015) %>% 
+  select(education) %>% 
+  pull()
+
+
+model.data <- model.data %>% 
+  mutate(education = fct_collapse(education, 
+                                 "Batch1" = as.character(Batch1_edu), 
+                                 "Batch2" = as.character(Batch2_edu), 
+                                 "Batch3" = as.character(Batch3_edu),
+                                 "Batch4" = as.character(Batch4_edu)
+                                 ))
+```
+
+
+```{r}
+### binding industry to 3 clusters
+Batch1_ind <- gathered_inc_industry %>% 
+  filter(cluster == "Batch1", year == 2015) %>% 
+  select(industry) %>% 
+  pull()
+
+Batch2_ind <- gathered_inc_industry %>% 
+  filter(cluster == "Batch2", year == 2015) %>% 
+  select(industry) %>% 
+  pull()
+
+Batch3_ind <- gathered_inc_industry %>% 
+  filter(cluster == "Batch3", year == 2015) %>% 
+  select(industry) %>% 
+  pull()
+
+
+model.data <- model.data %>% 
+  mutate(industry = fct_collapse(industry, 
+                                 "Batch1" = as.character(Batch1_ind), 
+                                 "Batch2" = as.character(Batch2_ind), 
+                                 "Batch3" = as.character(Batch3_ind)
+                                 )) 
+```
+
+<div>
+I built the same model of multiple logistic regression. However, I used the cluster analysis from the previous parts to group the `education` and `industry` variables. Using that made the number of variables less and calculation more efficient.  
+</div>
+
+#### Summary and removing with NAs
+
+<div>
+As seen from the data summary, some observations have missing values. Moreover, I dropped the `education` and `industry` level only to consider batches.
+</div>
+
+```{r}
+# summarizing data
+kable(summary(model.data), caption = "Logistic regression variables")
+
+# remove NAs
+model.data <- model.data %>% 
+  filter(!is.na(worked_per_week), !is.na(industry))
+
+# remove the unused factor levels
+model.data$education <- droplevels(model.data$education)
+model.data$industry <- droplevels(model.data$industry)
+```
+
+#### Train and Test dataset
+
+<div>
+I did the same as the complex model and divided the data into train and test datasets with a 70:30 ratio. The tables below show the proportion of each dataset, indicating that those random samplings have the same ratio for each type of health insurance.
+</div>
+
+```{r}
+model.data <- model.data %>% 
+  mutate(id = row_number())
+train.data <- model.data %>% sample_frac(.70)
+test.data <-anti_join(model.data, train.data, by='id')
+
+train.simple <- prop.table(wtd.table(train.data$health_insurance, weights = train.data$weight, type = "table"))
+
+kable(train.simple, col.names = "proportion", caption = "Train dataset proportion", format = "markdown")
+
+test.simple <- prop.table(wtd.table(test.data$health_insurance, weights = test.data$weight, type = "table"))
+
+kable(test.simple, col.names = "proportion", caption = "Test dataset proportion", format = "markdown")
+
+
+```
+
+#### Build the simple model
+```{r cache = TRUE}
+time2 <- system.time(multinom.fit <- multinom(health_insurance ~ . -id -weight, maxit=500, data = train.data, weights = weight))
+```
+
+```{r}
+p1<-predict(multinom.fit, type="class", newdata=test.data)
+eval.model<- postResample(test.data$health_insurance, p1)
+```
+
+<div>
+This model has `r multinom.fit$n[1]-1` different variables, less than one-third of the complex model. The model's accuracy was `r round(as.numeric(eval.model[1])*100,2)/100`, only `r abs(round(as.numeric(eval.big.model[1])*100,2)/100-round(as.numeric(eval.model[1])*100,2)/100)` lower than the intricate model. The model efficiency was pretty good; it took `r round(as.numeric(time2[1]))` seconds to create it. Moreover, the importance of each variable is shown in the table below. Immigrants who have been living in the South American continent have the most impact on predicting the type of health insurance, followed by industries allocated to batch 2.
+</div>
+
+```{r}
+# The importance of different predictors
+imp.model <- varImp(multinom.fit)
+imp.model <- imp.model %>% 
+  arrange(desc(Overall))
+kable(imp.model, digits = 2)
+```
+# Discussion
+
+<div>
+Here is the summary of my first regression model. The comparison table shows that the nonlinear model gave the best result. I averaged all the immigrants' salaries based on age and gender in this research. Therefore, this model is not appropriate to predict the new data. It only gives what the average of this community would be if we have the information about the age and gender of an immigrant in the USA. This model is potent to test in other communities since this data has a large sample size and can be generalized.
+</div>
+```{r}
+`Adjusted R-squared` = c(round(summary.age$adj.r.squared*100,2)/100,
+                         round(summary.gender$adj.r.squared*100,2)/100,
+                         round(summary.interact$adj.r.squared*100,2)/100,
+                         round(poly.model.summary$adj.r.squared*100,2)/100)
+
+AIC = c(AIC1, AIC2, AIC3, AIC4)
+
+Issues = c("Cond. Het, Non-normality, Very Low Adjusted R-squared", 
+           "Cond. Het.", 
+           "Cond. Het., Lower Adjusted R-squared", 
+           "-")
+compare.regression <- data.frame(AIC, `Adjusted R-squared`, Issues)
+
+row.names(compare.regression) <- c("only age", "age & gender", "interaction", "non-linear")
+
+kable(compare.regression, caption = "Comparing regression models of explaining salary", align = "c")
+```
+
+<div>
+The efficiency and accuracy of multiple logistic regression models are compared below. As it can be seen, the simple model is way better than the complex one. Generally, accuracy between 0.62-0.75 is pretty good for multiple logistic regression models. Therefore, I am confident in these findings, and this result is helpful for health insurance companies to target which people can be marketed for either public or private health insurance. This study can be further investigated using other machine learning techniques such as random forest and decision trees to see which model gives us better results.
+</div>
+
+```{r}
+Accuracy = c(round(as.numeric(eval.big.model[1])*100,2)/100,
+             round(as.numeric(eval.model[1])*100,2)/100)
+
+AIC.logistic = c(multinom.fit1$AIC, multinom.fit$AIC)
+
+time.logistic = c(round(as.numeric(time1[1])), round(as.numeric(time2[1])))
+
+`No of variables` = c(multinom.fit1$n[1]-1, multinom.fit$n[1]-1)
+compare.logistic.regression <- data.frame(Accuracy, AIC.logistic, time.logistic, `No of variables`)
+
+row.names(compare.logistic.regression) <- c("Complex model", "Simple model")
+
+colnames(compare.logistic.regression) <- c("Accuracy", "AIC", "Time to solve", "No of variables")
+kable(compare.logistic.regression, caption = "Comparing logistic regression models of predicting health insurance type", align = "c")
+```
+<div>
+My study has limitations, such as top-coded variable `adj_income` or filtering the `age` between 20 and 70. Also, the data is sampled and weighted by some statistical tools to demonstrate the whole population, which might be incorrect and influence the result of this study.
+
+</div>

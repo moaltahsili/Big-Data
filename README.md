@@ -4,4 +4,4 @@ Then I employed unsupervised ML methods (hierarchical clustering, k-means) to cl
 Finally, I deployed multiple logistic regression to enhance accuracy and efficiency.
 
 ##
-You can see the out put by downloading the html file.
+You can see the output report by downloading the html file.

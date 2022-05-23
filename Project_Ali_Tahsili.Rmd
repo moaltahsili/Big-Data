@@ -1,5 +1,5 @@
 ---
-title: 'Final Project - AMOD 5250H'
+title: 'Big Data Project'
 author: "Ali Tahsili"
 output:
   html_document:
